@@ -1,0 +1,395 @@
+详细修改计划：将 provider 注册逻辑从 BufferManager 中抽出
+涉及文件清单
+#	文件路径	改动类型
+1	ucm/transport/kv/asu/trans/src/buffer_manager.h	接口重构
+2	ucm/transport/kv/asu/trans/src/buffer_manager.cpp	删除 provider 逻辑
+3	ucm/transport/kv/asu/trans/src/asu_transport_impl.h	新增成员
+4	ucm/transport/kv/asu/trans/src/asu_transport_impl.cpp	外部注册逻辑
+5	ucm/transport/kv/asu/test/transport/buffer_manager_test.cpp	删除/新增测试
+6	ucm/transport/kv/asu/test/transport/transport_task_completion_test.cpp	去掉 provider 参数
+7	ucm/transport/kv/asu/test/transport/sqe_request_test.cpp	去掉 provider 参数
+8	ucm/transport/kv/asu/test/transport/asu_submit_flow_test.cpp	无需改动（已不传 provider）
+文件 1：buffer_manager.h
+路径: ucm/transport/kv/asu/trans/src/buffer_manager.h（共 95 行）
+改动 1.1：第 56-57 行 — Init 签名去掉 provider 参数
+// 改前（第 56-57 行）：
+    Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num,
+                TransProvider* provider = nullptr);
+
+// 改后：
+    Status Init(std::string name, MemoryType type, std::size_t slot_capacity, std::size_t slot_num);
+改动 1.2：第 65 行 — 保留 GetTokenId，新增 SetTokenId 和 getter 方法
+// 改前（第 65 行）：
+    std::uint32_t GetTokenId() const { return tokenId_; }
+
+// 改后（替换第 65 行，扩展为多行）：
+    std::uint32_t GetTokenId() const { return tokenId_; }
+    void SetTokenId(std::uint32_t tokenId) { tokenId_ = tokenId; }
+
+    void* GetDeviceAddr() const { return region_.deviceAddr; }
+    void* GetLocalAddr() const { return region_.localAddr; }
+    std::size_t GetTotalSize() const { return slot_stride_ * slot_num_; }
+    TransProvider::MemType GetProviderMemType() const { return region_.providerMemType; }
+改动 1.3：第 80 行 — 删除 RegisterMemory 声明
+// 改前（第 80 行）：
+    Status RegisterMemory();
+
+// 改后：删除此行
+改动 1.4：第 90-91 行 — 删除 provider_ 和 mrHandle_ 成员
+// 改前（第 90-91 行）：
+    TransProvider* provider_{nullptr};
+    MRHandle mrHandle_{kInvalidMRHandle};
+
+// 改后：删除这两行
+文件 1 总结：删除 3 行，修改 1 行，新增 6 行。净变化 +3 行。
+文件 2：buffer_manager.cpp
+路径: ucm/transport/kv/asu/trans/src/buffer_manager.cpp（共 252 行）
+改动 2.1：第 99-117 行 — Shutdown() 删除 unregister 逻辑
+// 改前（第 99-117 行）：
+void BufferManager::Shutdown()
+{
+    if (provider_ && mrHandle_) {                                    // ← 删除
+        std::vector<TransProvider::UnregisterMemoryDesc> descs{{mrHandle_}};  // ← 删除
+        const auto statuses = provider_->UnregisterMemory(descs);    // ← 删除
+        for (const auto& status : statuses) {                        // ← 删除
+            if (!status.ok()) {                                      // ← 删除
+                UC_WARN("Failed to unregister {} buffer memory: {}.", name_, status.message);  // ← 删除
+            }                                                        // ← 删除
+        }                                                            // ← 删除
+    }                                                                // ← 删除
+    provider_ = nullptr;                                             // ← 删除
+    mrHandle_ = kInvalidMRHandle;                                    // ← 删除
+    tokenId_ = 0;
+    region_.Reset();
+    slot_capacity_ = 0;
+    slot_stride_ = 0;
+    slot_num_ = 0;
+}
+
+// 改后：
+void BufferManager::Shutdown()
+{
+    tokenId_ = 0;
+    region_.Reset();
+    slot_capacity_ = 0;
+    slot_stride_ = 0;
+    slot_num_ = 0;
+}
+删除第 101-111 行（共 11 行）。
+改动 2.2：第 119-120 行 — Init 签名去掉 provider 参数
+// 改前（第 119-120 行）：
+Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_capacity,
+                           std::size_t slot_num, TransProvider* provider)
+
+// 改后：
+Status BufferManager::Init(std::string name, MemoryType type, std::size_t slot_capacity,
+                           std::size_t slot_num)
+改动 2.3：第 158-166 行 — 删除 Init 中的 provider 注册逻辑
+// 改前（第 158-166 行）：
+    if (provider) {
+        provider_ = provider;
+        auto regStatus = RegisterMemory();
+        if (!regStatus.ok()) {
+            provider_ = nullptr;
+            region_.Reset();
+            return regStatus;
+        }
+    }
+
+// 改后：删除这 9 行
+改动 2.4：第 171-195 行 — 删除整个 RegisterMemory() 方法
+// 改前（第 171-195 行）：
+Status BufferManager::RegisterMemory()
+{
+    std::size_t total = slot_stride_ * slot_num_;
+    std::vector<TransProvider::RegisterMemoryDesc> descs{
+        {region_.providerMemType, reinterpret_cast<uintptr_t>(region_.deviceAddr), total,
+         reinterpret_cast<uintptr_t>(region_.localAddr)}
+    };
+    std::vector<MRHandle> mrHandles;
+    auto regStatus = provider_->RegisterMemory(descs, mrHandles);
+    if (!regStatus.ok() || mrHandles.empty()) {
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             name_ + ": failed to register memory: " + regStatus.message);
+    }
+
+    auto tokenStatus = provider_->GetMemTokenId(mrHandles[0], tokenId_);
+    if (!tokenStatus.ok()) {
+        std::vector<TransProvider::UnregisterMemoryDesc> unregDescs{{mrHandles[0]}};
+        provider_->UnregisterMemory(unregDescs);
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             name_ + ": failed to get token id: " + tokenStatus.message);
+    }
+
+    mrHandle_ = mrHandles[0];
+    return Status::OK();
+}
+
+// 改后：删除这 25 行
+文件 2 总结：删除 45 行（11 + 9 + 25），修改 1 行。净变化 -45 行。
+文件 3：asu_transport_impl.h
+路径: ucm/transport/kv/asu/trans/src/asu_transport_impl.h（共 90 行）
+改动 3.1：第 73 行之后 — 新增 flagBufferMrHandle_ 成员
+// 改前（第 72-74 行）：
+    BufferManager sendBufferManager_;
+    BufferManager flagBufferManager_;
+    std::unique_ptr<ProtocolManager> protocolManager_;
+
+// 改后：
+    BufferManager sendBufferManager_;
+    BufferManager flagBufferManager_;
+    MRHandle flagBufferMrHandle_{kInvalidMRHandle};
+    std::unique_ptr<ProtocolManager> protocolManager_;
+文件 3 总结：新增 1 行。
+文件 4：asu_transport_impl.cpp
+路径: ucm/transport/kv/asu/trans/src/asu_transport_impl.cpp（共 313 行）
+改动 4.1：第 143-169 行 — Init 中两个 BufferManager 去掉 provider，flag buffer 外部注册
+// 改前（第 143-169 行，共 27 行）：
+    auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
+                                          config_.sendBufferSlotSize, config_.sendBufferSlotNum,
+                                          transProvider_.get());
+    if (!status.ok()) {
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after send buffer initialization "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return status;
+    }
+
+    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
+                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum,
+                                     transProvider_.get());
+    if (!status.ok()) {
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after flag buffer initialization "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return status;
+    }
+
+// 改后（替换为以下内容）：
+    auto status = sendBufferManager_.Init("asu send buffer", MemoryType::HOST_PINNED,
+                                          config_.sendBufferSlotSize, config_.sendBufferSlotNum);
+    if (!status.ok()) {
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after send buffer initialization "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return status;
+    }
+
+    status = flagBufferManager_.Init("asu flag buffer", MemoryType::HOST_PINNED,
+                                     config_.flagBufferSlotSize, config_.flagBufferSlotNum);
+    if (!status.ok()) {
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after flag buffer initialization "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return status;
+    }
+
+    std::vector<TransProvider::RegisterMemoryDesc> regDescs{
+        {flagBufferManager_.GetProviderMemType(),
+         reinterpret_cast<uintptr_t>(flagBufferManager_.GetDeviceAddr()),
+         flagBufferManager_.GetTotalSize(),
+         reinterpret_cast<uintptr_t>(flagBufferManager_.GetLocalAddr())}};
+    std::vector<MRHandle> mrHandles;
+    status = transProvider_->RegisterMemory(regDescs, mrHandles);
+    if (!status.ok() || mrHandles.empty()) {
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after flag buffer registration "
+                "failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "failed to register flag buffer: " + status.message);
+    }
+    flagBufferMrHandle_ = mrHandles[0];
+
+    std::uint32_t tokenId = 0;
+    status = transProvider_->GetMemTokenId(flagBufferMrHandle_, tokenId);
+    if (!status.ok()) {
+        std::vector<TransProvider::UnregisterMemoryDesc> unregDescs{{flagBufferMrHandle_}};
+        transProvider_->UnregisterMemory(unregDescs);
+        flagBufferMrHandle_ = kInvalidMRHandle;
+        const auto shutdownStatus = Shutdown();
+        if (!shutdownStatus.ok()) {
+            UC_WARN(
+                "AsuTransportImpl::Init cleanup failed after flag buffer token "
+                "acquisition failure: code={} message={}",
+                static_cast<int>(shutdownStatus.code), shutdownStatus.message);
+        }
+        return Status::Error(StatusCode::INTERNAL_ERROR,
+                             "failed to get flag buffer token id: " + status.message);
+    }
+    flagBufferManager_.SetTokenId(tokenId);
+改动说明：
+- 第 143-145 行：sendBufferManager_.Init 去掉第 5 个参数 transProvider_.get()
+- 第 157-159 行：flagBufferManager_.Init 去掉第 5 个参数 transProvider_.get()
+- 第 169 行之后：新增 flag buffer 外部 MR 注册 + tokenId 获取 + SetTokenId 逻辑（约 35 行）
+改动 4.2：第 219-221 行 — Shutdown 中增加外部 MR 注销
+// 改前（第 219-221 行）：
+    taskExecutor_.reset();
+    flagBufferManager_.Shutdown();
+    sendBufferManager_.Shutdown();
+
+// 改后：
+    taskExecutor_.reset();
+
+    if (flagBufferMrHandle_ != kInvalidMRHandle && transProvider_) {
+        std::vector<TransProvider::UnregisterMemoryDesc> unregDescs{{flagBufferMrHandle_}};
+        const auto statuses = transProvider_->UnregisterMemory(unregDescs);
+        for (const auto& s : statuses) {
+            if (!s.ok()) {
+                UC_WARN("Failed to unregister flag buffer memory: {}", s.message);
+            }
+        }
+        flagBufferMrHandle_ = kInvalidMRHandle;
+    }
+
+    flagBufferManager_.Shutdown();
+    sendBufferManager_.Shutdown();
+文件 4 总结：修改 2 行（去掉 provider 参数），新增约 45 行（外部注册 + 注销），净变化 +43 行。
+文件 5：buffer_manager_test.cpp
+路径: ucm/transport/kv/asu/test/transport/buffer_manager_test.cpp（共 551 行）
+改动 5.1：第 393-548 行 — 删除 StubTransProvider 类和 6 个 provider 测试
+删除以下全部内容：
+- 第 393-452 行：StubTransProvider 类定义（60 行）
+- 第 454-471 行：InitWithProviderRegistersMemory 测试（18 行）
+- 第 473-495 行：HostPinnedRegistersDeviceAddress 测试（23 行）
+- 第 497-512 行：InitWithProviderAllocateReturnsTokenId 测试（16 行）
+- 第 514-524 行：DestroyWithProviderUnregistersMemory 测试（11 行）
+- 第 526-536 行：InitWithProviderRegisterFails 测试（11 行）
+- 第 538-548 行：InitWithProviderGetTokenFailsCleansUp 测试（11 行）
+共删除约 156 行。
+改动 5.2：第 391 行之后（删除后） — 新增 2 个替代测试
+TEST_F(BufferManagerTest, SetTokenIdReflectedInAllocate)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("test", MemoryType::HOST, 1024, 10);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    mgr.SetTokenId(99);
+    ASSERT_EQ(mgr.GetTokenId(), 99);
+
+    ScatterGatherEntry sge;
+    status = mgr.Allocate(64, sge);
+    ASSERT_TRUE(status.ok()) << status.message;
+    ASSERT_EQ(sge.tokenId, 99);
+
+    mgr.Free(sge.slot_index);
+}
+
+TEST_F(BufferManagerTest, ExposesMemoryInfo)
+{
+    BufferManager mgr;
+    auto status = mgr.Init("test", MemoryType::HOST_PINNED, 4096, 2);
+    ASSERT_TRUE(status.ok()) << status.message;
+
+    ASSERT_NE(mgr.GetDeviceAddr(), nullptr);
+    ASSERT_NE(mgr.GetLocalAddr(), nullptr);
+    ASSERT_EQ(mgr.GetProviderMemType(), TransProvider::MemType::MEM_DEVICE);
+}
+新增约 30 行。
+文件 5 总结：删除 156 行，新增 30 行。净变化 -126 行。
+文件 6：transport_task_completion_test.cpp
+路径: ucm/transport/kv/asu/test/transport/transport_task_completion_test.cpp
+改动 6.1：第 113-118 行 — SetUp 中去掉 provider 参数
+// 改前（第 112-119 行）：
+        auto status =
+            transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
+                                                kTestBufferSlotSize, kTestBufferSlotNum, provider);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status =
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+                                                kTestBufferSlotSize, kTestBufferSlotNum, provider);
+
+// 改后：
+        auto status =
+            transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST,
+                                                kTestBufferSlotSize, kTestBufferSlotNum);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status =
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST,
+                                                kTestBufferSlotSize, kTestBufferSlotNum);
+改动 6.2：第 196-203 行 — PollTaskCompletions 测试中去掉 provider 参数
+// 改前（第 196-203 行）：
+    ASSERT_TRUE(deviceTransport.sendBufferManager_
+                    .Init("test send buffer", MemoryType::HOST, kTestBufferSlotSize,
+                          kTestBufferSlotNum, provider)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.flagBufferManager_
+                    .Init("test flag buffer", MemoryType::ASCEND_DEVICE, kTestBufferSlotSize,
+                          kTestBufferSlotNum, provider)
+                    .ok());
+
+// 改后：
+    ASSERT_TRUE(deviceTransport.sendBufferManager_
+                    .Init("test send buffer", MemoryType::HOST, kTestBufferSlotSize,
+                          kTestBufferSlotNum)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.flagBufferManager_
+                    .Init("test flag buffer", MemoryType::ASCEND_DEVICE, kTestBufferSlotSize,
+                          kTestBufferSlotNum)
+                    .ok());
+文件 6 总结：修改 4 处（去掉 , provider 参数）。净变化 0 行（仅删参数）。
+文件 7：sqe_request_test.cpp
+路径: ucm/transport/kv/asu/test/transport/sqe_request_test.cpp
+改动 7.1：第 193-198 行 — SetUp 中去掉 provider 参数
+// 改前（第 192-199 行）：
+        auto status =
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST_PINNED,
+                                                kFlagBufferSlotSize, kFlagBufferSlotNum, provider);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST_PINNED,
+                                                     kTestSendBufferSlotSize,
+                                                     kTestSendBufferSlotNum, provider);
+
+// 改后：
+        auto status =
+            transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST_PINNED,
+                                                kFlagBufferSlotSize, kFlagBufferSlotNum);
+        ASSERT_TRUE(status.ok()) << status.message;
+        status = transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST_PINNED,
+                                                     kTestSendBufferSlotSize,
+                                                     kTestSendBufferSlotNum);
+改动 7.2：第 302-308 行 — DeviceMemory 测试中去掉 provider 参数
+// 改前（第 302-309 行）：
+    ASSERT_TRUE(deviceTransport.flagBufferManager_
+                    .Init("test flag buffer", MemoryType::HOST_PINNED, kFlagBufferSlotSize,
+                          kFlagBufferSlotNum, provider)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.sendBufferManager_
+                    .Init("test send buffer", MemoryType::ASCEND_DEVICE, kTestSendBufferSlotSize,
+                          kTestSendBufferSlotNum, provider)
+                    .ok());
+
+// 改后：
+    ASSERT_TRUE(deviceTransport.flagBufferManager_
+                    .Init("test flag buffer", MemoryType::HOST_PINNED, kFlagBufferSlotSize,
+                          kFlagBufferSlotNum)
+                    .ok());
+    ASSERT_TRUE(deviceTransport.sendBufferManager_
+                    .Init("test send buffer", MemoryType::ASCEND_DEVICE, kTestSendBufferSlotSize,
+                          kTestSendBufferSlotNum)
+                    .ok());
+文件 7 总结：修改 4 处（去掉 , provider 参数）。净变化 0 行。
+文件 8：asu_submit_flow_test.cpp
+路径: ucm/transport/kv/asu/test/transport/asu_submit_flow_test.cpp
+无需改动。第 269 行和第 272 行已经不传 provider：
+transport_->sendBufferManager_.Init("test send buffer", MemoryType::HOST_PINNED, 4096, 1)
+transport_->flagBufferManager_.Init("test flag buffer", MemoryType::HOST_PINNED, 128, 1)
