@@ -59,6 +59,7 @@ if(BUILD_UCM_DRAMPOOL)
             infra_template
             infra_thread
             buffer_pool
+            metrics
             ucm_p2p_transport
             trans
             dramstore
