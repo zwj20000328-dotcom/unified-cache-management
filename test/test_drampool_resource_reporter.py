@@ -47,6 +47,10 @@ class FakeMetrics:
         self.counters = {}
         self.gauges = {}
         self.histograms = {}
+        self.created = {}
+
+    def create_stats(self, name, metric_type, buckets=None):
+        self.created[name] = (metric_type, tuple(buckets or []))
 
     def update_stats(self, values):
         for name, value in values.items():
@@ -332,7 +336,16 @@ def test_real_prometheus_export(monkeypatch):
         (bridge.__name__, bridge),
     ]:
         monkeypatch.setitem(sys.modules, name, module)
-    from ucm.integration.vllm.metrics import UCMConnectorStats, UCMPromMetrics
+    import importlib
+
+    import ucm.integration.vllm.metrics as metrics_module
+
+    # The module-level `class UCMPromMetrics(KVConnectorPromMetrics)` binds the
+    # bridge stub installed at import time, so reload to rebind this test's stub
+    # (and its registry) regardless of which end-to-end test imported first.
+    importlib.reload(metrics_module)
+    UCMConnectorStats = metrics_module.UCMConnectorStats
+    UCMPromMetrics = metrics_module.UCMPromMetrics
     from ucm.metrics_config import get_metric_definitions
     from ucm.metrics_dispatcher import MetricsDispatcher
 
@@ -373,6 +386,134 @@ def test_real_prometheus_export(monkeypatch):
         1.9
     )
     assert next(s.value for s in samples if s.name.endswith("_count")) == 6
+
+
+def test_reporter_registers_dynamic_gauge_names(tmp_path, monkeypatch):
+    """Dynamic per-slot-size gauge names are lazily registered in the native store.
+
+    The names emitted by the C++ Render (drampool_buffer_pool_usage_ratio_<size>)
+    are absent from the static metrics config, and the native store drops updates
+    to unregistered names, so the reporter must register them on first sight.
+    """
+    reader = make_reporter(tmp_path, monkeypatch)
+    snapshot = parse(
+        {
+            "event": "drampool_metrics_snapshot",
+            "timestamp": 1788825600,
+            "counters": {},
+            "gauges": {
+                "drampool_buffer_pool_usage_ratio_4096": 0.72,
+                "drampool_buffer_pool_usage_ratio_512": 0.30,
+            },
+            "histograms": {},
+        }
+    )
+    reader._report_snapshot(snapshot, None)
+    assert native.created["drampool_buffer_pool_usage_ratio_4096"] == ("gauge", ())
+    assert native.created["drampool_buffer_pool_usage_ratio_512"] == ("gauge", ())
+    assert native.gauges["drampool_buffer_pool_usage_ratio_4096"] == 0.72
+    assert native.gauges["drampool_buffer_pool_usage_ratio_512"] == 0.30
+    # Idempotent: re-reporting does not re-register (create_stats is first-wins).
+    reader._report_snapshot(snapshot, snapshot)
+    assert native.created["drampool_buffer_pool_usage_ratio_4096"] == ("gauge", ())
+
+
+def test_real_prometheus_export_dynamic_gauge_slot_size(tmp_path, monkeypatch):
+    """Reporter -> native -> dispatcher -> connector -> Prometheus slot_size label."""
+    from dataclasses import dataclass, field
+    from functools import partial
+    from types import SimpleNamespace
+
+    prometheus = pytest.importorskip("prometheus_client")
+    registry = prometheus.CollectorRegistry()
+    vllm = ModuleType("vllm")
+    vllm.__path__ = []
+    config_module = ModuleType("vllm.config")
+    config_module.VllmConfig = object
+    bridge = ModuleType("vllm.distributed.kv_transfer.kv_connector.v1.metrics")
+
+    @dataclass
+    class Stats:
+        data: dict = field(default_factory=dict)
+
+    class PromMetrics:
+        def __init__(self, config, metric_types, labelnames, per_engine_labelvalues):
+            self._counter_cls = partial(prometheus.Counter, registry=registry)
+            self._gauge_cls = partial(prometheus.Gauge, registry=registry)
+            self._histogram_cls = partial(prometheus.Histogram, registry=registry)
+            self.per_engine_labelvalues = per_engine_labelvalues
+
+    bridge.KVConnectorStats = Stats
+    bridge.KVConnectorPromMetrics = PromMetrics
+    bridge.PromMetric = bridge.PromMetricT = object
+    for name, module in [
+        ("vllm", vllm),
+        ("vllm.config", config_module),
+        (bridge.__name__, bridge),
+    ]:
+        monkeypatch.setitem(sys.modules, name, module)
+    import importlib
+
+    import ucm.integration.vllm.metrics as metrics_module
+
+    # See test_real_prometheus_export: reload so UCMPromMetrics rebinds this
+    # test's bridge stub and registry.
+    importlib.reload(metrics_module)
+    UCMConnectorStats = metrics_module.UCMConnectorStats
+    UCMPromMetrics = metrics_module.UCMPromMetrics
+    from ucm.metrics_config import get_metric_definitions
+    from ucm.metrics_dispatcher import MetricsDispatcher
+
+    config = {
+        "consumers": {"vllm_connector": True},
+        "gauge": [
+            {
+                "name": "drampool_buffer_pool_usage_ratio",
+                "documentation": "per block size",
+                "multiprocess_mode": "livemostrecent",
+                "dynamic_labels": ["slot_size"],
+            }
+        ],
+    }
+    reader = make_reporter(tmp_path, monkeypatch)
+    snapshot = parse(
+        {
+            "event": "drampool_metrics_snapshot",
+            "timestamp": 1788825600,
+            "counters": {},
+            "gauges": {
+                "drampool_buffer_pool_usage_ratio_4096": 0.72,
+                "drampool_buffer_pool_usage_ratio_512": 0.30,
+            },
+            "histograms": {},
+        }
+    )
+    reader._report_snapshot(snapshot, None)
+
+    dispatcher = MetricsDispatcher(config)
+    dispatcher.drain_to_consumers()
+    c, g, h = dispatcher.get_stats_and_clear("vllm_connector")
+    assert g == {
+        "drampool_buffer_pool_usage_ratio_4096": 0.72,
+        "drampool_buffer_pool_usage_ratio_512": 0.30,
+    }
+    stats = UCMConnectorStats.from_ucm_snapshot(
+        c, g, h, "0", get_metric_definitions(config)
+    )
+    vllm_config = SimpleNamespace(
+        kv_transfer_config=SimpleNamespace(launch_config={"metrics_config": config})
+    )
+    prom = UCMPromMetrics(vllm_config, {}, ["model_name"], {0: ["test-model"]})
+    prom.observe(stats.data)
+    samples = [
+        s
+        for metric in registry.collect()
+        for s in metric.samples
+        if s.name == "ucm:drampool_buffer_pool_usage_ratio"
+    ]
+    got = {(s.labels["slot_size"], s.labels["worker_rank"]): s.value for s in samples}
+    assert got == {("4096", "0"): 0.72, ("512", "0"): 0.30}
+    assert all(s.labels["model_name"] == "test-model" for s in samples)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="real flock election requires POSIX")

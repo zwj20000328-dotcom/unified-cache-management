@@ -57,6 +57,8 @@ curl http://<vllm-ip>:<vllm-port>/metrics | grep '^ucm:'
 | `engine` | 产生指标的 vLLM 引擎；区分同一服务中的 DP 实例 | `engine-0` |
 | `worker_rank` | 产生指标的 UCM 进程，对应 TP 实例；worker 使用其分布式 rank，scheduler 使用 `scheduler` | `0`, `1`, `scheduler` |
 
+部分指标还带有指标专属 label。`ucm:drampool_buffer_pool_usage_ratio` 额外带有 `slot_size`（KV cache block size，单位字节），因此每个配置的 block size 会各自上报为一条序列，可在 Grafana 中筛选或分开展示。
+
 例如：
 
 ```text

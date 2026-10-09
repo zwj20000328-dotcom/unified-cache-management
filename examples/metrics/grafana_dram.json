@@ -190,7 +190,7 @@
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
-        "orientation": "horizontal",
+        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -198,13 +198,13 @@
           "fields": "",
           "values": false
         },
-        "textMode": "auto",
+        "textMode": "value_and_name",
         "wideLayout": true
       },
       "targets": [
         {
-          "expr": "max(ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) or vector(0)",
-          "legendFormat": "",
+          "expr": "max by (slot_size) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\",slot_size=~\"$slot_size\"})",
+          "legendFormat": "{{slot_size}}",
           "refId": "A"
         }
       ],
@@ -751,8 +751,8 @@
           "refId": "B"
         },
         {
-          "expr": "max (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
-          "legendFormat": "DramPool KV buffer",
+          "expr": "max by (slot_size) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\",slot_size=~\"$slot_size\"})",
+          "legendFormat": "DramPool KV buffer {{slot_size}}",
           "refId": "C"
         }
       ],
@@ -1103,6 +1103,34 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 2,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values({__name__=\"ucm:drampool_buffer_pool_usage_ratio\", job=~\"$job\", instance=~\"$instance\", model_name=~\"$model_name\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}, slot_size)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Slot size",
+        "multi": true,
+        "name": "slot_size",
+        "options": [],
+        "query": {
+          "query": "label_values({__name__=\"ucm:drampool_buffer_pool_usage_ratio\", job=~\"$job\", instance=~\"$instance\", model_name=~\"$model_name\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}, slot_size)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 3,
         "type": "query"
       },
       {

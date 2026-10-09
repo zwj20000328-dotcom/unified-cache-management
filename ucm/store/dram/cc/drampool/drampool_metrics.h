@@ -106,6 +106,18 @@ inline constexpr char kDumpBatchTotalDurationMs[] = "drampool_dump_batch_total_d
 inline constexpr char kLoadBatchTotalDurationMs[] = "drampool_load_batch_total_duration_ms";
 inline constexpr char kLookupBatchTotalDurationMs[] = "drampool_lookup_batch_total_duration_ms";
 
+// Dynamic per-slot-size gauge: drampool_buffer_pool_usage_ratio_<slot_size>.
+// The name carries the block size as a suffix because the transport model is
+// name->value (no label dimension); the export side (ucm/observability.py and
+// ucm/integration/vllm/metrics.py) splits the suffix back into a slot_size
+// label, so Prometheus exposes drampool_buffer_pool_usage_ratio{slot_size=...}.
+// Names are built at runtime, so call sites keep the string-based UpdateStats
+// overload; the only caller is the low-frequency GC report loop.
+inline std::string BufferPoolUsageRatioName(std::uint64_t slotSize)
+{
+    return std::string(kBufferPoolUsageRatio) + "_" + std::to_string(slotSize);
+}
+
 // RAII duration observer: measures with SteadyNowUs() and records the elapsed
 // time in ms on scope exit. Takes a NAME_TO_METRIC_ID() reference so the metric
 // id is resolved once per call site instead of a string lookup per observation.
@@ -201,7 +213,8 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
         // F. Resource usage
         {kMetadataEntryCount, "gauge"},
         {kFlagPoolUsageRatio, "gauge"},
-        {kBufferPoolUsageRatio, "gauge"},
+        // drampool_buffer_pool_usage_ratio_<slot_size> gauges are registered
+        // dynamically per block size in SetupDrampoolMetrics(), not listed here.
         // G. Metadata settlement duration
         {kMetadataStoreendDurationMs, "histogram", kMsBucketsSettlement,
          std::size(kMsBucketsSettlement)},
@@ -235,9 +248,11 @@ inline const std::vector<DrampoolMetricDef>& DrampoolMetricDefs()
 // C++ process without the Python binding, so it creates the same names, types,
 // and buckets as the UCM Python side (setup_ucm_metrics -> ucmmetrics) does
 // from examples/metrics/metrics_configs.yaml: like the Python loop over the
-// config, every entry of DrampoolMetricDefs() is passed to CreateStats.
-// CreateStats is idempotent and first registration wins; unregistered names
-// are silently dropped by UpdateStats.
+// config, every entry of DrampoolMetricDefs() is passed to CreateStats, plus
+// the dynamic per-slot-size buffer-pool gauges below. CreateStats is idempotent
+// and first registration wins; unregistered names are silently dropped by
+// UpdateStats. Call after the runtime config is parsed so the dynamic
+// per-slot-size gauges follow g_config.poolBlockSizes.
 inline void SetupDrampoolMetrics()
 {
     UC::Metrics::SetUp();
@@ -248,6 +263,10 @@ inline void SetupDrampoolMetrics()
         } else {
             UC::Metrics::CreateStats(def.name, def.type);
         }
+    }
+    // F-supplement: dynamic data-pool usage gauges, one per block size.
+    for (const auto slotSize : g_config.poolBlockSizes) {
+        UC::Metrics::CreateStats(BufferPoolUsageRatioName(slotSize), "gauge");
     }
 }
 

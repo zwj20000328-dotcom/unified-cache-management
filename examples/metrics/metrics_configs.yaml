@@ -394,8 +394,9 @@ gauge:
     documentation: "Current number of cached entries (blocks) in the pool, summed over all shards"
     multiprocess_mode: livemostrecent
   - name: "drampool_buffer_pool_usage_ratio"
-    documentation: "Used-slot ratio of the data pools, aggregated over all configured block sizes"
+    documentation: "Used-slot ratio of the data pool per block size; exported as drampool_buffer_pool_usage_ratio{slot_size=<size>}"
     multiprocess_mode: livemostrecent
+    dynamic_labels: ["slot_size"]
   - name: "drampool_flag_pool_usage_ratio"
     documentation: "Used-slot ratio of the flag response-buffer pool"
     multiprocess_mode: livemostrecent

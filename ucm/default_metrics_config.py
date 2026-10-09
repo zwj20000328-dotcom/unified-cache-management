@@ -692,8 +692,11 @@ _GAUGE_METRICS = [
     ),
     (
         "drampool_buffer_pool_usage_ratio",
-        "Used-slot ratio of the data pools, aggregated over all configured block sizes",
-        {"multiprocess_mode": "livemostrecent"},
+        "Used-slot ratio of the data pool per block size; exported as drampool_buffer_pool_usage_ratio{slot_size=<size>}",
+        {
+            "multiprocess_mode": "livemostrecent",
+            "dynamic_labels": ["slot_size"],
+        },
     ),
     (
         "drampool_flag_pool_usage_ratio",

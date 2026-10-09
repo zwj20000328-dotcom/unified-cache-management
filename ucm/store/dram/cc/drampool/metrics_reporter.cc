@@ -175,6 +175,14 @@ std::string MetricsReporter::Render() const
         first = false;
         AppendNumber(output, def.name, FindValue(gaugeValues_, def.name));
     }
+    // Dynamic per-slot-size buffer-pool gauges, keyed by the suffixed name that
+    // the export side splits back into a slot_size label.
+    for (const auto slotSize : g_config.poolBlockSizes) {
+        const auto name = BufferPoolUsageRatioName(slotSize);
+        if (!first) { output << ','; }
+        first = false;
+        AppendNumber(output, name, FindValue(gaugeValues_, name));
+    }
     output << "},\"histograms\":{";
     first = true;
     for (const auto& def : DrampoolMetricDefs()) {

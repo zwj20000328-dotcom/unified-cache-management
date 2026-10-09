@@ -100,6 +100,10 @@ Each metric exported through the vLLM connector carries these labels:
 | `engine` | vLLM engine that produced the metric; distinguishes DP instances in the same service | `engine-0` |
 | `worker_rank` | UCM process that produced the metric, corresponding to a TP instance; workers use their distributed rank and the scheduler uses `scheduler` | `0`, `1`, `scheduler` |
 
+Some metrics also carry a metric-specific label. `ucm:drampool_buffer_pool_usage_ratio` adds `slot_size`
+(the KV cache block size in bytes), so each configured block size is reported as its own series and can be
+filtered or broken out in Grafana.
+
 For example:
 
 ```text

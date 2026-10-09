@@ -62,7 +62,6 @@ constexpr const char* kCounterNames[] = {
 constexpr const char* kGaugeNames[] = {
     kMetadataEntryCount,
     kFlagPoolUsageRatio,
-    kBufferPoolUsageRatio,
     kQueueRequestSize,
     kQueueCompletionInflight,
     kQueueCompletionSize,
@@ -90,7 +89,10 @@ class UCDrampoolMetricsTest : public testing::Test {
 protected:
     static void SetUpTestSuite()
     {
+        // poolBlockSizes drives the dynamic per-slot-size gauge registration, so
+        // it must be configured before the one-time SetupDrampoolMetrics() call.
         g_savedConfig = g_config;
+        g_config.poolBlockSizes = {512, 4096};
         SetupDrampoolMetrics();
     }
 
@@ -118,13 +120,19 @@ TEST_F(UCDrampoolMetricsTest, SetupRegistersEveryStaticMetricName)
     }
 }
 
-TEST_F(UCDrampoolMetricsTest, SetupRegistersBufferPoolUsageRatioGauge)
+TEST_F(UCDrampoolMetricsTest, SetupRegistersBufferPoolUsageGaugePerSlotSize)
 {
-    Metrics::UpdateStats(kBufferPoolUsageRatio, 0.25);
+    EXPECT_EQ(BufferPoolUsageRatioName(4096), "drampool_buffer_pool_usage_ratio_4096");
+    Metrics::UpdateStats(BufferPoolUsageRatioName(512), 0.25);
+    Metrics::UpdateStats(BufferPoolUsageRatioName(4096), 0.5);
+    // Slot sizes absent from g_config.poolBlockSizes are never registered.
+    Metrics::UpdateStats(BufferPoolUsageRatioName(8192), 0.9);
 
     const auto stats = Metrics::GetAllStatsAndClear();
     const auto& gauges = std::get<1>(stats);
-    EXPECT_EQ(gauges.at(kBufferPoolUsageRatio), 0.25);
+    EXPECT_EQ(gauges.at(BufferPoolUsageRatioName(512)), 0.25);
+    EXPECT_EQ(gauges.at(BufferPoolUsageRatioName(4096)), 0.5);
+    EXPECT_EQ(gauges.count(BufferPoolUsageRatioName(8192)), 0);
 }
 
 TEST_F(UCDrampoolMetricsTest, UnregisteredNamesAreSilentlyDropped)

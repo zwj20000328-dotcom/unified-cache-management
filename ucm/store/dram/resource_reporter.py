@@ -182,6 +182,7 @@ class DramPoolResourceReporter(FileResourceMetricsReporter):
             interval_sec=interval_sec,
             shared_memory_dir=shared_memory_dir,
         )
+        self._registered_gauges: set[str] = set()
 
     def _read_state(self):
         try:
@@ -196,9 +197,21 @@ class DramPoolResourceReporter(FileResourceMetricsReporter):
     def _write_state(self, snapshot):
         self._write_previous_state({"snapshot": _snapshot_record(snapshot)})
 
+    def _ensure_gauges_registered(self, gauges: dict[str, int | float]) -> None:
+        # The C++ Render emits the dynamic drampool_buffer_pool_usage_ratio_<size>
+        # gauges, whose names do not exist in the static metrics config. The
+        # native store silently drops updates to unregistered names, so register
+        # each gauge name on first sight. create_stats is idempotent and
+        # first-registration-wins, so re-registering a static gauge is a no-op.
+        for name in gauges:
+            if name not in self._registered_gauges:
+                ucmmetrics.create_stats(name, "gauge")
+                self._registered_gauges.add(name)
+
     def _report_snapshot(self, snapshot, previous):
         counters, gauges, histograms = snapshot_deltas(snapshot, previous)
         try:
+            self._ensure_gauges_registered(gauges)
             ucmmetrics.merge_histogram_stats(histograms)
             ucmmetrics.update_stats(counters | gauges)
         except Exception as error:
