@@ -190,7 +190,7 @@
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
-        "orientation": "auto",
+        "orientation": "horizontal",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -198,13 +198,13 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value_and_name",
+        "textMode": "auto",
         "wideLayout": true
       },
       "targets": [
         {
-          "expr": "max by (slot_size) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\",slot_size=~\"$slot_size\"})",
-          "legendFormat": "{{slot_size}}",
+          "expr": "max(ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"}) or vector(0)",
+          "legendFormat": "",
           "refId": "A"
         }
       ],
@@ -660,7 +660,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 28
       },
@@ -721,8 +721,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 28
       },
       "options": {
@@ -751,12 +751,53 @@
           "refId": "B"
         },
         {
-          "expr": "max by (slot_size) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\",slot_size=~\"$slot_size\"})",
-          "legendFormat": "DramPool KV buffer {{slot_size}}",
+          "expr": "max (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "DramPool KV buffer",
           "refId": "C"
         }
       ],
       "title": "Memory pool utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (slot_size) (ucm:drampool_buffer_pool_usage_ratio{job=~\"$job\",instance=~\"$instance\",model_name=~\"$model_name\",engine=~\"$engine\",worker_rank=~\"$worker_rank\"})",
+          "legendFormat": "{{slot_size}}",
+          "refId": "A"
+        }
+      ],
+      "title": "KV Buffer Slot Usage by Block Size",
       "type": "timeseries"
     },
     {
@@ -1103,34 +1144,6 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 2,
-        "type": "query"
-      },
-      {
-        "allValue": ".*",
-        "current": {
-          "selected": true,
-          "text": "All",
-          "value": "$__all"
-        },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
-        },
-        "definition": "label_values({__name__=\"ucm:drampool_buffer_pool_usage_ratio\", job=~\"$job\", instance=~\"$instance\", model_name=~\"$model_name\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}, slot_size)",
-        "hide": 0,
-        "includeAll": true,
-        "label": "Slot size",
-        "multi": true,
-        "name": "slot_size",
-        "options": [],
-        "query": {
-          "query": "label_values({__name__=\"ucm:drampool_buffer_pool_usage_ratio\", job=~\"$job\", instance=~\"$instance\", model_name=~\"$model_name\", engine=~\"$engine\", worker_rank=~\"$worker_rank\"}, slot_size)",
-          "refId": "StandardVariableQuery"
-        },
-        "refresh": 1,
-        "regex": "",
-        "skipUrlSync": false,
-        "sort": 3,
         "type": "query"
       },
       {

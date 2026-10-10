@@ -204,6 +204,40 @@ def test_histogram_same_counts_with_changed_sum_is_a_reset():
     )
 
 
+def test_histogram_schema_change_rebaselines_instead_of_stalling(tmp_path, monkeypatch):
+    """A persisted baseline with a different bucket layout must not stall the reporter.
+
+    An upgrade can re-register histograms with new bucket bounds, so the state
+    persisted by the previous build disagrees with every new snapshot. Treating
+    that mismatch as fatal raised on every polling cycle and never reached
+    _write_state, leaving the stale baseline in place forever. The reporter must
+    instead re-baseline to the current distribution (like a source reset) and
+    persist the new schema in the same cycle.
+    """
+    reader = make_reporter(tmp_path, monkeypatch)
+    stale = record()
+    stale["histograms"][NAME]["upper_bounds"] = [100, 500, 1000, 5000]
+    stale["histograms"][NAME]["bucket_counts"] = [5, 5, 5, 5, 5]
+    stale["histograms"][NAME]["count"] = 25
+    write_record(reader, stale)
+    reader._collect_once()
+    native.get_all_stats_and_clear()
+
+    current = record(43, counts=[12, 23, 6, 1], total=13900)
+    write_record(reader, current)
+    reader._collect_once()
+    # The incompatible baseline is replaced by the full current distribution.
+    assert native.get_all_stats_and_clear()[2][NAME] == (
+        current["histograms"][NAME]["bucket_counts"],
+        current["histograms"][NAME]["sum"],
+    )
+    # The new schema is persisted in the same cycle...
+    assert reader._read_state() == parse(current)
+    # ...so the following cycle differences normally again.
+    reader._collect_once()
+    assert native.get_all_stats_and_clear()[2][NAME] == ([0, 0, 0, 0], 0)
+
+
 def make_reporter(tmp_path, monkeypatch):
     reader = reporter.DramPoolResourceReporter(
         str(tmp_path / "metrics.log"), shared_memory_dir=str(tmp_path)

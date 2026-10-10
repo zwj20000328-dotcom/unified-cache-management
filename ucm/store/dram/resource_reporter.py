@@ -135,17 +135,24 @@ def snapshot_deltas(
             counts, total = list(value.bucket_counts), value.sum
         else:
             if old.upper_bounds != value.upper_bounds:
-                raise ValueError(f"Histogram schema changed: {name}")
-            counts = [a - b for a, b in zip(value.bucket_counts, old.bucket_counts)]
-            total = value.sum - old.sum
-            if (
-                any(v < 0 for v in counts)
-                or total < 0
-                or (all(v == 0 for v in counts) and total != 0)
-            ):
-                # Like a counter decrease, infer a reset. Reset the whole
-                # distribution rather than mixing reset and differenced buckets.
+                # The persisted baseline predates a bucket-layout change (an
+                # upgrade re-registered the histograms with new bounds), so the
+                # old distribution cannot be differenced. Re-baseline to the
+                # current one, like a source reset; _report_snapshot persists
+                # the new schema in the same cycle, so later cycles difference
+                # normally instead of stalling on the stale state forever.
                 counts, total = list(value.bucket_counts), value.sum
+            else:
+                counts = [a - b for a, b in zip(value.bucket_counts, old.bucket_counts)]
+                total = value.sum - old.sum
+                if (
+                    any(v < 0 for v in counts)
+                    or total < 0
+                    or (all(v == 0 for v in counts) and total != 0)
+                ):
+                    # Like a counter decrease, infer a reset. Reset the whole
+                    # distribution rather than mixing reset and differenced buckets.
+                    counts, total = list(value.bucket_counts), value.sum
         histograms[name] = (counts, total)
     return counters, current.gauges, histograms
 
