@@ -60,8 +60,8 @@ constexpr const char* kCounterNames[] = {
 };
 
 constexpr const char* kGaugeNames[] = {
-    kMetadataEntryCount, kFlagPoolUsageRatio,      kBufferPoolUsageRatio,
-    kQueueRequestSize,   kQueueCompletionInflight, kQueueCompletionSize,
+    kMetadataEntryCount,      kFlagPoolUsageRatio,  kQueueRequestSize,
+    kQueueCompletionInflight, kQueueCompletionSize,
 };
 
 constexpr const char* kHistogramNames[] = {
